@@ -5,9 +5,23 @@ import types
 import z3
 
 
+class CounterExample(Exception):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def __repr__(self):
+        return f'Counter example {self.model}'
+
+
+class Undecided(Exception):
+    pass
+
+
 class RefinementType:
-    def __init__(self, theory, template_types=None, refinement=None):
-        self.theory = theory
+    def __init__(self, name, theory, template_types=None, refinement=None):
+        self._name = name
+        self._theory = theory
         self.template_types = template_types
         self.refinement = refinement
 
@@ -16,14 +30,13 @@ class RefinementType:
 
     def __iter__(self):
         yield self
-        raise StopIteration
 
     def __or__(self, refinement):
+        refinement = make_symbolic(refinement)
         return self._replace(refinement=refinement)
 
     def __invert__(self):
         return self._replace(refinement=lambda v: z3.Not(self.refinement(v)))
-
 
     def _replace(self, **kwargs):
         """
@@ -44,8 +57,18 @@ class RefinementType:
         inst.__dict__.update(attribs)
         return inst
 
+    @property
+    def theory(self):
+        if self.template_types is not None:
+            return self._theory(*self.template_types)
+        else:
+            return self._theory()
+
+    def name(self):
+        return self._name
+
     def declare(self, name):
-        return self.theory(name)
+        return z3.Const(name, self.theory)
 
     def assert_into(self, solver, name):
         inst = self.declare(name)
@@ -115,10 +138,14 @@ def verify(function):
     solver = function.solver
 
     scope = {
-        name: p.assert_into(solver, name) for name, p in parameters.items()
+        **{
+            name: p.assert_into(solver, name) for name, p in parameters.items()
+        },
+        '_z3_If': z3.If,
     }
 
-    return_type.refinement.__globals__.update(scope)
+    if return_type.refinement is not None:
+        return_type.refinement.__globals__.update(scope)
     ret_val = return_type.declare('_ret_val')
 
     function_body = tree.body[0].body
@@ -129,10 +156,13 @@ def verify(function):
 
         def symbolic_exec(self, expr):
             python_code = compile(ast.Expression(expr), '<ast>', 'eval')
-            return eval(python_code, scope.copy())
+            return eval(python_code, {**function.__globals__, **scope})
 
         def visit_Assign(self, node):
             self.generic_visit(node)
+
+            import astor
+            print(astor.to_source(node))
 
             expr = self.symbolic_exec(node.value)
             target = z3.Const(node.targets[0].id, expr.sort())
@@ -141,9 +171,22 @@ def verify(function):
 
             scope[node.targets[0].id] = target
 
-            print(scope)
+        def visit_BinOp(self, node):
+            self.generic_visit(node)
+
+            # Disallow division by zero, in z3 divisions by zero are allowed as
+            # the expressions are purely symbolic and not connected to a
+            # specific value
+            if isinstance(node.op, ast.Div):
+                expr = self.symbolic_exec(node.right)
+                solver.add(expr == 0)
+
+        def visit_AnnAssign(self, node):
+            self.generic_visit(node)
+            raise NotImplementedError('Annotated assignments not supported')
 
         def visit_Return(self, node):
+            self.generic_visit(node)
             expr = self.symbolic_exec(node.value)
             solver.add(ret_val == expr)
 
@@ -152,18 +195,44 @@ def verify(function):
 
     try:
         solver.push()
-        solver.add((~return_type).refinement(ret_val))
+
+        if return_type.refinement is not None:
+            solver.add((~return_type).refinement(ret_val))
 
         print(solver.to_smt2())
 
         contradiction = solver.check()
         if contradiction == z3.sat:
-            raise ValueError(f'Counter example {solver.model()}')
+            raise CounterExample(solver.model())
         if contradiction == z3.unsat:
             return True
         else:
-            return False
+            raise Undecided()
     finally:
         solver.pop()
 
     raise ValueError('This statmement should be removed #refactor')
+
+
+def make_symbolic(λ):
+    print(ast.dump(function_ast(λ)))
+    expr = function_ast(λ).body[0].value
+
+    class SymbolicTransformer(ast.NodeTransformer):
+        def visit_IfExp(self, node):
+            self.generic_visit(node)
+
+            return ast.Call(
+                ast.Name(id="_z3_If", ctx=ast.Load()),
+                args=[
+                    node.test,
+                    node.body,
+                    node.orelse,
+                ],
+                keywords=[],
+            )
+    SymbolicTransformer().visit(expr)
+
+    expr = ast.fix_missing_locations(ast.Expression(expr))
+    code = compile(expr, '<ast>', 'eval')
+    return eval(code, λ.__globals__.copy())

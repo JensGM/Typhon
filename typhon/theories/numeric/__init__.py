@@ -2,4 +2,5 @@ from ...core import RefinementType
 import z3
 
 
-Real = RefinementType(z3.Real)
+Int = RefinementType('Int', z3.IntSort)
+Real = RefinementType('Real', z3.RealSort)
