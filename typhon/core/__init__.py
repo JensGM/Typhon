@@ -35,7 +35,7 @@ class RefinementType:
         yield self
 
     def __or__(self, refinement):
-        refinement = make_symbolic(refinement)
+        refinement = lambda_to_symbolic(refinement)
         return self._replace(refinement=refinement)
 
     def __invert__(self):
@@ -202,6 +202,7 @@ def verify(function):
         **{
             name: p.assert_into(solver, name) for name, p in parameters.items()
         },
+        '_z3_And': z3.And,
         '_z3_If': z3.If,
     }
 
@@ -212,13 +213,21 @@ def verify(function):
     function_body = tree.body[0].body
 
     axioms = set()
-    class SymbolicExecution(ast.NodeVisitor):
+    class SymbolicExecution(SymbolicExecutionTransformer):
         def __init__(self):
             self.assign_count = {}
 
         def symbolic_exec(self, expr):
+            expr = ast.fix_missing_locations(expr)
             python_code = compile(ast.Expression(expr), '<ast>', 'eval')
-            return eval(python_code, {**function.__globals__, **scope})
+            try:
+                return eval(python_code, {**function.__globals__, **scope})
+            except Exception:
+                print('FAILED')
+                print(ast.dump(expr))
+
+                import astor
+                print(astor.to_source(expr))
 
         def visit_Assign(self, node):
             self.generic_visit(node)
@@ -227,8 +236,21 @@ def verify(function):
             target = z3.Const(node.targets[0].id, expr.sort())
 
             solver.add(target == expr)
-
             scope[node.targets[0].id] = target
+
+            return node
+
+        def visit_AnnAssign(self, node):
+            self.generic_visit(node)
+
+            target_sort = self.symbolic_exec(node.annotation)
+            target = z3.Const(node.target.id, target_sort.theory)
+            expr = self.symbolic_exec(node.value)
+
+            solver.add(target == expr)
+            scope[node.target.id] = expr
+
+            return node
 
         def visit_BinOp(self, node):
             self.generic_visit(node)
@@ -240,21 +262,14 @@ def verify(function):
                 expr = self.symbolic_exec(node.right)
                 axioms.add(expr != 0)
 
-        def visit_AnnAssign(self, node):
-            self.generic_visit(node)
-
-            target_sort = self.symbolic_exec(node.annotation)
-            target = z3.Const(node.target.id, target_sort.theory)
-            expr = self.symbolic_exec(node.value)
-
-            solver.add(target == expr)
-
-            scope[node.target.id] = expr
+            return node
 
         def visit_Return(self, node):
             self.generic_visit(node)
             expr = self.symbolic_exec(node.value)
             solver.add(ret_val == expr)
+
+            return node
 
 
     SymbolicExecution().visit(tree)
@@ -286,23 +301,43 @@ def verify(function):
     raise ValueError('This statmement should be removed #refactor')
 
 
-def make_symbolic(λ):
+class SymbolicExecutionTransformer(ast.NodeTransformer):
+    def visit_IfExp(self, node):
+        self.generic_visit(node)
+
+        return ast.Call(
+            ast.Name(id="_z3_If", ctx=ast.Load()),
+            args=[
+                node.test,
+                node.body,
+                node.orelse,
+            ],
+            keywords=[],
+        )
+
+    def visit_BoolOp(self, node):
+        self.generic_visit(node)
+
+        return ast.Call(
+            ast.Name(id="_z3_And", ctx=ast.Load()),
+            args=list(node.values),
+            keywords=[],
+        )
+
+    def visit_TupleOp(self, node):
+        self.generic_visit(node)
+
+
+
+        return ast.Call(
+            ast.Name(id='Tuple')
+        )
+
+
+def lambda_to_symbolic(λ):
     expr = lambda_ast(λ).body[0].value
 
-    class SymbolicTransformer(ast.NodeTransformer):
-        def visit_IfExp(self, node):
-            self.generic_visit(node)
-
-            return ast.Call(
-                ast.Name(id="_z3_If", ctx=ast.Load()),
-                args=[
-                    node.test,
-                    node.body,
-                    node.orelse,
-                ],
-                keywords=[],
-            )
-    SymbolicTransformer().visit(expr)
+    SymbolicExecutionTransformer().visit(expr)
 
     expr = ast.fix_missing_locations(ast.Expression(expr))
     code = compile(expr, '<ast>', 'eval')
