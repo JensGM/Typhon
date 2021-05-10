@@ -1,5 +1,8 @@
 import ast
+import dis
 import inspect
+import io
+import string
 import textwrap
 import types
 import z3
@@ -7,8 +10,8 @@ import z3
 
 class CounterExample(Exception):
     def __init__(self, model):
-        super().__init__()
         self.model = model
+        super().__init__(repr(self.model))
 
     def __repr__(self):
         return f'Counter example {self.model}'
@@ -117,6 +120,64 @@ def function_ast(func):
     return ast.parse(src)
 
 
+def lambda_ast(λ):
+    """
+    This is complicated.
+
+    inspired by [1].
+
+    .. [1] https://gist.github.com/Xion/617c1496ff45f3673a5692c3b0e3f75a
+    """
+    def explode(code):
+        asm = io.StringIO()
+        for inst in dis.get_instructions(code):
+            if inst.opname == 'LOAD_CONST':
+                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
+            elif inst.opname == 'LOAD_FAST':
+                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
+            elif inst.opname == 'LOAD_GLOBAL':
+                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
+            elif inst.opname == 'LOAD_NAME':
+                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
+            else:
+                print(inst.offset,
+                      inst.opname,
+                      inst.argval if inst.argval else inst.arg,
+                      file=asm)
+        asm.seek(0)
+        return asm.read()
+
+
+
+    source = function_source(λ)
+    tree = ast.parse(source)
+
+    Λ = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda)]
+
+    for λnode in Λ:
+        λsrc = source[λnode.col_offset:]
+        λsrc_body = source[λnode.body.col_offset:]
+
+        # Sometimes python will give you the wrong col_offset if there are line
+        # line breaks in lambdas.
+        λsrc_body =  λsrc_body.lstrip(string.whitespace + ':')
+
+        min_length = len('lambda:_')  # shortest possible lambda expression
+
+        while len(λsrc) > min_length:
+            try:
+                code = compile(λsrc_body, '<ast>', 'eval')
+
+                if explode(code) == explode(λ.__code__):
+                    return ast.parse(λsrc)
+            except AttributeError:
+                pass
+            λsrc = λsrc[:-1]
+            λsrc_body = λsrc_body[:-1]
+
+    raise ValueError('Unable to extract lambda source code')
+
+
 def verify(function):
     signature = inspect.signature(function)
     tree = function_ast(function)
@@ -150,6 +211,7 @@ def verify(function):
 
     function_body = tree.body[0].body
 
+    axioms = set()
     class SymbolicExecution(ast.NodeVisitor):
         def __init__(self):
             self.assign_count = {}
@@ -160,9 +222,6 @@ def verify(function):
 
         def visit_Assign(self, node):
             self.generic_visit(node)
-
-            import astor
-            print(astor.to_source(node))
 
             expr = self.symbolic_exec(node.value)
             target = z3.Const(node.targets[0].id, expr.sort())
@@ -177,9 +236,9 @@ def verify(function):
             # Disallow division by zero, in z3 divisions by zero are allowed as
             # the expressions are purely symbolic and not connected to a
             # specific value
-            if isinstance(node.op, ast.Div):
+            if isinstance(node.op, (ast.Div, ast.FloorDiv)):
                 expr = self.symbolic_exec(node.right)
-                solver.add(expr == 0)
+                axioms.add(expr != 0)
 
         def visit_AnnAssign(self, node):
             self.generic_visit(node)
@@ -193,30 +252,35 @@ def verify(function):
 
     SymbolicExecution().visit(tree)
 
-    try:
-        solver.push()
+    requirements = []
+    if return_type.refinement is not None:
+        requirements.append(return_type.refinement(ret_val))
+    requirements.extend(axioms)
 
-        if return_type.refinement is not None:
-            solver.add((~return_type).refinement(ret_val))
+    for formula in requirements:
+        try:
+            solver.push()
 
-        print(solver.to_smt2())
+            solver.add(formula)
 
-        contradiction = solver.check()
-        if contradiction == z3.sat:
-            raise CounterExample(solver.model())
-        if contradiction == z3.unsat:
-            return True
-        else:
-            raise Undecided()
-    finally:
-        solver.pop()
+            print(formula, "::", solver.to_smt2())
 
+            contradiction = solver.check()
+            if contradiction == z3.sat:
+                raise CounterExample(solver.model())
+            if contradiction == z3.unsat:
+                pass
+            else:
+                raise Undecided()
+        finally:
+            solver.pop()
+
+    return True
     raise ValueError('This statmement should be removed #refactor')
 
 
 def make_symbolic(λ):
-    print(ast.dump(function_ast(λ)))
-    expr = function_ast(λ).body[0].value
+    expr = lambda_ast(λ).body[0].value
 
     class SymbolicTransformer(ast.NodeTransformer):
         def visit_IfExp(self, node):
