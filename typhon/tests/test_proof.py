@@ -25,7 +25,6 @@ def test_proof_basic():
         add_error.prove()
 
 
-@pytest.mark.xfail
 def test_proof_basic_type_comment():
     @prove
     def add(a : Real, b : Real) -> Real | (lambda v: v == a + b):
@@ -33,7 +32,7 @@ def test_proof_basic_type_comment():
         return v
 
     @prove
-    def add_error(a : Real, b : Real) -> Real | (lambda v: v == a + b):
+    def add_error(a : Real, b : Real) -> Real | (lambda v: v == a - b):
         v: Int = a + b
         return v
 

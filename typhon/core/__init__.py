@@ -170,7 +170,7 @@ def lambda_ast(λ):
 
                 if explode(code) == explode(λ.__code__):
                     return ast.parse(λsrc)
-            except AttributeError:
+            except SyntaxError:
                 pass
             λsrc = λsrc[:-1]
             λsrc_body = λsrc_body[:-1]
@@ -242,7 +242,14 @@ def verify(function):
 
         def visit_AnnAssign(self, node):
             self.generic_visit(node)
-            raise NotImplementedError('Annotated assignments not supported')
+
+            target_sort = self.symbolic_exec(node.annotation)
+            target = z3.Const(node.target.id, target_sort.theory)
+            expr = self.symbolic_exec(node.value)
+
+            solver.add(target == expr)
+
+            scope[node.target.id] = expr
 
         def visit_Return(self, node):
             self.generic_visit(node)
@@ -261,7 +268,7 @@ def verify(function):
         try:
             solver.push()
 
-            solver.add(formula)
+            solver.add(z3.Not(formula))
 
             print(formula, "::", solver.to_smt2())
 
