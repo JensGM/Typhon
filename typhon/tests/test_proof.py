@@ -32,12 +32,12 @@ def test_proof_basic_type_comment():
         return v
 
     @prove
-    def add_error(a : Real, b : Real) -> Real | (lambda v: v == a - b):
+    def add_error(a : Real, b : Real) -> Real | (lambda v: v == a + b):
         v: Int = a + b
         return v
 
     assert add.prove()
-    with pytest.raises(CounterExample):
+    with pytest.raises(TypeError):
         add_error.prove()
 
 
@@ -47,7 +47,8 @@ def test_maybe():
         lambda v: v == (Just(a / b) if b != 0 else Nothing[Real])
     ):
         if b != 0:
-            return Just(a / b)
+            v = a / b
+            return Just(v)
         else:
             return Nothing[Real]
 
@@ -58,6 +59,7 @@ def test_maybe():
         return a / b
 
     assert divide.prove()
+    assert False
     with pytest.raises(CounterExample):
         divide_error.prove()
 
@@ -75,12 +77,12 @@ def test_proof_complex():
                 R1 == b0 * (v[0] - ix) + b1 * (v[1] - iy) - b2 * iz
             if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0
             else
-                v == Nothing
+                v == Nothing[Tuple[Real, Real]]
         )
     ):
         y = (a0 * R1 - b0 * R0 + (a0 * b2 - b0 * a2) * Iz +
                                  (a0 * b1 - b0 * a1) * Iy) / (a0 * b1 - b0 * a1)
         x = (R0 + R1 + (a2 + b2) * Iz - (a1 + b1) * (y - Iy)) / (a0 + b0) + Ix
-        return Just((x, y)) if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0 else Nothing
+        return Just((x, y)) if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0 else Nothing[Tuple[Real, Real]]
 
     assert planar_windspeed.prove()

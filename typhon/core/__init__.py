@@ -2,6 +2,7 @@ import ast
 import dis
 import inspect
 import io
+import itertools
 import string
 import textwrap
 import types
@@ -78,6 +79,12 @@ class RefinementType:
         if self.refinement is not None:
             solver.add(self.refinement(inst))
         return inst
+
+    def __repr__(self):
+        r = self.name()
+        if self.refinement is not None:
+            r += f'| {self.refinement}'
+        return r
 
 
 
@@ -210,7 +217,51 @@ def verify(function):
         return_type.refinement.__globals__.update(scope)
     ret_val = return_type.declare('_ret_val')
 
-    function_body = tree.body[0].body
+    # # Type:
+    # #     divide(a : Real, b : Real) -> Maybe[Real] | (
+    # #         lambda v: v == (Just(a / b) if b != 0 else Nothing[Real])
+    # #     )
+    # # Code:
+    # #     if b != 0:
+    # #         v = a / b
+    # #         return Just(v)
+    # #     else:
+    # #         return Nothing[Real]
+    # #
+    # # Execution Graph:
+    # #                        - [0]
+    # #               b == 1  |   | b != 0
+    # #                       |  [1]
+    # #                       |   | v = a / b
+    # #                       |  [2]
+    # #                       |   | return Just(v)
+    # #                      [3]  |
+    # # return Nothing[Real]  |   |
+    # #                        - [4]
+    # #
+    #
+    # # Control flow
+    # E_0_1, E_0_3, E_1_2, E_2_4, E_3_4 = Bools('E_0_1 E_0_3 E_1_2 E_2_4 E_3_4')
+    # solver.add(Or(E_0_1, E_0_3))
+    # solver.add(Implies(E_0_1, E_1_2))
+    # solver.add(Implies(E_1_2, E_2_4))
+    # solver.add(Implies(E_0_3, E_3_4))
+    #
+    # # Data constraints
+    # solver.add(Implies(E_0_1, b != 0))
+    # solver.add(Implies(E_0_4, b == 0))
+    # solver.add(Implies(E_1_2, v == a / b))
+    # solver.add(Implies(E_2_4, _ret_val == Just(v)))
+    # solver.add(Implies(E_3_4, _ret_val == Nothing[Real]))
+    #
+    # # From the refinement type we have
+    # #     _ret_val == (Just(a / b) if b != 0 else Nothing[Real])
+    # # And an infered axiom that is
+    # #     E_1_2 => b != 0
+    # # If the solver is sat, but unsat if we add the inverse of any of these,
+    # # the implementation is verified to our constraints.
+
+
 
     axioms = set()
     class SymbolicExecution(SymbolicExecutionTransformer):
@@ -247,6 +298,12 @@ def verify(function):
             target = z3.Const(node.target.id, target_sort.theory)
             expr = self.symbolic_exec(node.value)
 
+            if expr.sort() != target_sort.theory:
+                target_str = str(target_sort.theory)
+                expr_str = f'{expr.sort()}({expr})'
+                msg = f'Type mismatch expected {target_str} got {expr_str}'
+                raise TypeError(msg)
+
             solver.add(target == expr)
             scope[node.target.id] = expr
 
@@ -279,6 +336,9 @@ def verify(function):
         requirements.append(return_type.refinement(ret_val))
     requirements.extend(axioms)
 
+    if solver.check() == z3.unsat:
+        raise ValueError(z3.unsat)
+
     for formula in requirements:
         try:
             solver.push()
@@ -298,7 +358,6 @@ def verify(function):
             solver.pop()
 
     return True
-    raise ValueError('This statmement should be removed #refactor')
 
 
 class SymbolicExecutionTransformer(ast.NodeTransformer):
@@ -326,8 +385,6 @@ class SymbolicExecutionTransformer(ast.NodeTransformer):
 
     def visit_TupleOp(self, node):
         self.generic_visit(node)
-
-
 
         return ast.Call(
             ast.Name(id='Tuple')
