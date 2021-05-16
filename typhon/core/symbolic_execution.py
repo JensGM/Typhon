@@ -1,6 +1,7 @@
 from .futil import function_ast
 from .futil import lambda_ast
 from collections import OrderedDict
+from collections import namedtuple
 from functools import partial
 from functools import reduce
 from itertools import count
@@ -31,14 +32,16 @@ class AxiomFinder(ast.NodeVisitor):
         # the expressions are purely symbolic and not connected to a
         # specific value
         if isinstance(node.op, (ast.Div, ast.FloorDiv)):
-            expr = symbolic_exec(node.right, self.scope)
+            expr = eval_expr(node.right, self.scope)
             self.axioms.add(expr != 0)
 
 
 def infere_axioms(tree, scope):
     axiom_finder = AxiomFinder(scope)
     axiom_finder.visit(tree)
-    return axiom_finder.axioms
+    a = axiom_finder.axioms
+    print(f'Infered {a}!')
+    return a
 
 
 class ExprToSymbolic(ast.NodeTransformer):
@@ -77,6 +80,7 @@ class AssignExtendList(list):
 
 
 def execution_graph(function_body, scope, ret_val):
+    Edge = namedtuple('Edge', ['constraint', 'axioms'])
     class 𝚲:
         @classmethod
         def visit(cls, node, mkedge):
@@ -96,11 +100,11 @@ def execution_graph(function_body, scope, ret_val):
             if len(node.targets) != 1:
                 raise ValueError('Unpacking not supported')
 
-            expr = symbolic_exec(node.value, scope)
+            expr, infered_axioms = symbolic_result(node.value, scope)
             target = z3.Const(node.targets[0].id, expr.sort())
 
             constraint = target == expr
-            _, edges, mkedge = mkedge(constraint)
+            _, edges, mkedge = mkedge(constraint, *infered_axioms)
 
             scope[node.targets[0].id] = expr
 
@@ -108,9 +112,9 @@ def execution_graph(function_body, scope, ret_val):
 
         @staticmethod
         def visit_AnnAssign(node, mkedge):
-            target_sort = symbolic_exec(node.annotation, scope)
+            target_sort = eval_expr(node.annotation, scope)
             target = z3.Const(node.target.id, target_sort.theory)
-            expr = symbolic_exec(node.value, scope)
+            expr, infered_axioms = symbolic_result(node.value, scope)
 
             if expr.sort() != target_sort.theory:
                 target_str = str(target_sort.theory)
@@ -119,7 +123,7 @@ def execution_graph(function_body, scope, ret_val):
                 raise TypeError(msg)
 
             constraint = target == expr
-            _, edges, mkedge = mkedge(constraint)
+            _, edges, mkedge = mkedge(constraint, *infered_axioms)
 
             scope[node.target.id] = expr
 
@@ -127,27 +131,28 @@ def execution_graph(function_body, scope, ret_val):
 
         @staticmethod
         def visit_Return(node, mkedge):
-            expr = symbolic_exec(node.value, scope)
+            expr, infered_axioms = symbolic_result(node.value, scope)
             constraint = ret_val == expr
-            _, edges, mkedge = mkedge(constraint)
+            _, edges, mkedge = mkedge(constraint, *infered_axioms)
             return edges, mkedge
 
         @staticmethod
         def visit_If(node, mkedge):
             edges = AssignExtendList()
 
-            test = symbolic_exec(node.test, scope)
-            _, edges.collect, mkedge_pos = mkedge(test)
-            _, edges.collect, mkedge_neg = mkedge(z3.Not(test))
+            test, infered_axioms = symbolic_result(node.test, scope)
+            not_test = z3.Not(test)
+            _, edges.collect, mkedge_pos = mkedge(test, *infered_axioms)
+            _, edges.collect, mkedge_neg = mkedge(not_test, *infered_axioms)
 
             edges.collect, mkedge_pos = 𝚲.visit_body(node.body, mkedge_pos)
             edges.collect, mkedge_neg = 𝚲.visit_body(node.orelse, mkedge_neg)
 
-            def gather_edges(*constraints):
+            def gather_edges(constraint, *axioms):
                 E = AssignExtendList()
                 out_node, E.collect, _ = mkedge_pos()
                 _, E.collect, mknode = mkedge_neg(out_node=lambda: out_node)
-                out_node, E.collect, mknode = mkedge(constraints,
+                out_node, E.collect, mknode = mkedge(constraint, *axioms,
                                                      in_node=lambda: out_node)
                 return out_node, E, mknode
 
@@ -156,20 +161,21 @@ def execution_graph(function_body, scope, ret_val):
     scope = scope.copy()
 
     node_counter = count()
-    def mkedge(*constraints,
-               in_node=lambda: next(node_counter),
+    def mkedge(constraint,
+               *axioms,
+               in_node=lambda i=next(node_counter): i,
                out_node=lambda: next(node_counter)):
         in_node = in_node()
         out_node = out_node()
-        edges = [(in_node, out_node, constraints)]
+        edges = [(in_node, out_node, Edge(constraint, axioms))]
         return out_node, edges, partial(mkedge, in_node=lambda: out_node)
 
     edges, _ = 𝚲.visit_body(function_body, mkedge)
 
     G = OrderedDict()
     print(edges)
-    for a, b, constraint in sorted(edges):
-        G.setdefault(a, OrderedDict())[b] = constraint
+    for a, b, e in sorted(edges):
+        G.setdefault(a, OrderedDict())[b] = e
 
     return G, scope
 
@@ -182,11 +188,18 @@ def symbolic_execution_graph(function, scope, ret_val):
     G, scope = execution_graph(function_body, scope, ret_val)
 
     edges = {a: {b: z3.Bool(f'E_{a}_{b}') for b in G[a]} for a in G}
+
     data_constraints = [
-        z3.Implies(edges[a][b], constraint)
+        z3.Implies(edges[a][b], G[a][b].constraint)
         for a in G
         for b in G[a]
-        for constraint in G[a][b]
+    ]
+
+    infered_axioms = [
+        (edges[a][b], axiom)
+        for a in G
+        for b in G[a]
+        for axiom in G[a][b].axioms
     ]
 
     # One of the initial branched must be true
@@ -208,143 +221,13 @@ def symbolic_execution_graph(function, scope, ret_val):
             for c in grand_children:
                 control_flow.append(z3.Implies(edges[a][b], edges[b][c]))
 
-    return control_flow, data_constraints, infere_axioms(tree, scope)
+    return control_flow, data_constraints, infered_axioms
 
 
-
-# # Type:
-# #     divide(a : Real, b : Real) -> Maybe[Real] | (
-# #         lambda v: v == (Just(a / b) if b != 0 else Nothing[Real])
-# #     )
-# # Code:
-# #     if b != 0:
-# #         v = a / b
-# #         return Just(v)
-# #     else:
-# #         return Nothing[Real]
-# #
-# # Execution Graph:
-# #                        - [0]
-# #          Not(b != 0)  |   | b != 0
-# #                       |  [1]
-# #                       |   | v = a / b
-# #                       |  [2]
-# #                       |   | return Just(v)
-# #                      [3]  |
-# # return Nothing[Real]  |   |
-# #                        - [4]
-# #
-#
-# # Control flow
-# E_0_1, E_0_3, E_1_2, E_2_4, E_3_4 = Bools('E_0_1 E_0_3 E_1_2 E_2_4 E_3_4')
-# solver.add(Or(E_0_1, E_0_3))
-# solver.add(Implies(E_0_1, E_1_2))
-# solver.add(Implies(E_1_2, E_2_4))
-# solver.add(Implies(E_0_3, E_3_4))
-#
-# # Data constraints
-# solver.add(Implies(E_0_1, b != 0))
-# solver.add(Implies(E_0_4, Not(b != 0)))
-# solver.add(Implies(E_1_2, v == a / b))
-# solver.add(Implies(E_2_4, _ret_val == Just(v)))
-# solver.add(Implies(E_3_4, _ret_val == Nothing[Real]))
-#
-# # From the refinement type we have
-# #     _ret_val == (Just(a / b) if b != 0 else Nothing[Real])
-# # And an infered axiom that is
-# #     E_1_2 => b != 0
-# # If the solver is sat, but unsat if we add the inverse of any of these,
-# # the implementation is verified to our constraints.
-#
-# a b v
-# 0 0 1
-# 0 1 1
-# 1 0 0
-# 1 1 1
-#
-# V = {
-#     0: {
-#         1: b != 0,
-#         3: Not(b != 0)
-#     },
-#     1: {
-#         2: v == a / b
-#     },
-#     2: {
-#         4: _ret_val == Just(v)
-#     },
-#     3: {
-#         4: _ret_val == Nothing[Real]
-#     },
-#     4: {},
-# }
-
-    # class SymbolicExecution(ast.NodeVisitor):
-    #     def __init__(self):
-    #         self._node_counter = itertools.count()
-    #         self.G {}
-    #
-    #     def new_node(self):
-    #         return next(self._node_counter)
-    #
-    #     def visit_Body(self, body, enter_edge=None, leave_edge=None):
-    #         Ep = self.new_node()
-    #         enter_edge(Ep)
-    #         for stmt in body:
-    #             Ec = self.new_node()
-    #             sexpr = self.visit(stmt)
-    #             self.G[Ep] = {Ec: sexpr}
-    #             Ep = Ec
-    #         leave_edge(Ep, sexpr)
-    #
-    #
-    #     def visit_If(self, node):
-    #         Ep, Ec = self.prev, self.new_node()
-    #         self.prev = Ec
-    #
-    #         test_sexpr = self.symbolic_exec(node.test)
-    #         edge_entering_if = lambda b: self.G[Ep] = {b: test_sexpr}
-    #         edge_exiting_if = lambda a, sexpr: self.G[a] = {Ec: sexpr}
-    #
-    #         self.visit_Body(node.body,
-    #                         enter_edge=edge_entering_if,
-    #                         exit_edge=edge_exiting_if)
-    #         self.visit_Body(node.orelse,
-    #                         enter_edge=edge_entering_if,
-    #                         exit_edge=edge_exiting_if)
-    #
-    #     def visit_Assign(self, node):
-    #         self.generic_visit(node)
-    #
-    #         expr = self.symbolic_exec(node.value)
-    #         target = z3.Const(node.targets[0].id, expr.sort())
-    #
-    #         solver.add(target == expr)
-    #         scope[node.targets[0].id] = target
-    #
-    #     def visit_AnnAssign(self, node):
-    #         self.generic_visit(node)
-    #
-    #         target_sort = self.symbolic_exec(node.annotation)
-    #         target = z3.Const(node.target.id, target_sort.theory)
-    #         expr = self.symbolic_exec(node.value)
-    #
-    #         if expr.sort() != target_sort.theory:
-    #             target_str = str(target_sort.theory)
-    #             expr_str = f'{expr.sort()}({expr})'
-    #             msg = f'Type mismatch expected {target_str} got {expr_str}'
-    #             raise TypeError(msg)
-    #
-    #         solver.add(target == expr)
-    #         scope[node.target.id] = expr
-    #
-    #     def visit_Return(self, node):
-    #         self.generic_visit(node)
-    #         expr = self.symbolic_exec(node.value)
-    #         solver.add(ret_val == expr)
-    #
-    #
-    # SymbolicExecution().visit(tree)
+def eval_expr(expr, scope):
+    expr = ast.fix_missing_locations(expr)
+    python_code = compile(ast.Expression(expr), '<ast>', 'eval')
+    return eval(python_code, scope.copy())
 
 
 def lambda_to_symbolic(λ):
@@ -360,7 +243,5 @@ def lambda_to_symbolic(λ):
     return eval(code, λ.__globals__.copy())
 
 
-def symbolic_exec(expr, scope):
-    expr = ast.fix_missing_locations(expr)
-    python_code = compile(ast.Expression(expr), '<ast>', 'eval')
-    return eval(python_code, scope.copy())
+def symbolic_result(expr, scope):
+    return eval_expr(expr, scope), infere_axioms(expr, scope)

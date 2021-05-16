@@ -115,10 +115,6 @@ def verify(function):
     (control_flow, data_constraints, infered_axioms
     ) = symbolic_execution_graph(function, scope, ret_val)
 
-    requirements = []
-    if return_type.refinement is not None:
-        requirements.append(return_type.refinement(ret_val))
-    requirements.extend(infered_axioms)
 
     solver.add(*control_flow, *data_constraints)
 
@@ -126,13 +122,18 @@ def verify(function):
         print(solver.to_smt2())
         raise ValueError(z3.unsat)
 
-    for formula in requirements:
+    tests = [(~return_type).refinement(ret_val)]
+    tests.extend(
+        z3.And(edge, z3.Implies(edge, z3.Not(axiom)))
+        for edge, axiom in infered_axioms
+    )
+    for test in tests:
         try:
             solver.push()
 
-            solver.add(z3.Not(formula))
+            solver.add(test)
 
-            print(formula, "::", solver.to_smt2())
+            print(test, '::', solver.to_smt2())
 
             contradiction = solver.check()
             if contradiction == z3.sat:
