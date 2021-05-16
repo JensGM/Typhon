@@ -59,7 +59,6 @@ def test_maybe():
         return a / b
 
     assert divide.prove()
-    assert False
     with pytest.raises(CounterExample):
         divide_error.prove()
 
