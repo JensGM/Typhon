@@ -1,8 +1,9 @@
 from .symbolic_execution import lambda_to_symbolic
 from .symbolic_execution import symbolic_execution_graph
-import z3
-import types
+from bs4 import BeautifulSoup
 import inspect
+import types
+import z3
 
 
 class CounterExample(Exception):
@@ -128,22 +129,17 @@ def verify(function):
         for edge, axiom in infered_axioms
     )
     for test in tests:
-        try:
-            solver.push()
+        z3.set_option(html_mode=True)
+        print(BeautifulSoup(f'Checking {test} in \n{solver}',
+                            features="html.parser"))
 
-            solver.add(test)
-
-            print(test, '::', solver.to_smt2())
-
-            contradiction = solver.check()
-            if contradiction == z3.sat:
-                raise CounterExample(solver.model())
-            if contradiction == z3.unsat:
-                pass
-            else:
-                raise Undecided()
-        finally:
-            solver.pop()
+        contradiction = solver.check(test)
+        if contradiction == z3.sat:
+            raise CounterExample(solver.model())
+        if contradiction == z3.unsat:
+            pass
+        else:
+            raise Undecided()
 
     return True
 

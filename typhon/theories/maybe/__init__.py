@@ -10,7 +10,6 @@ def _Maybe(T, _cache={}):
         T = T.theory
     except AttributeError:
         pass
-    print('MAYBE:', T)
     Maybe = z3.Datatype(f'Maybe[{T.name()}]')
     Maybe.declare('Just', ('just', T))
     Maybe.declare('Nothing')

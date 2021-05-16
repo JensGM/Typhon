@@ -59,6 +59,7 @@ def test_maybe():
     assert divide.prove()
     with pytest.raises(CounterExample):
         divide_error.prove()
+    assert False
 
 
 def test_proof_complex():

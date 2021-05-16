@@ -39,9 +39,7 @@ class AxiomFinder(ast.NodeVisitor):
 def infere_axioms(tree, scope):
     axiom_finder = AxiomFinder(scope)
     axiom_finder.visit(tree)
-    a = axiom_finder.axioms
-    print(f'Infered {a}!')
-    return a
+    return axiom_finder.axioms
 
 
 class ExprToSymbolic(ast.NodeTransformer):
@@ -173,7 +171,6 @@ def execution_graph(function_body, scope, ret_val):
     edges, _ = 𝚲.visit_body(function_body, mkedge)
 
     G = OrderedDict()
-    print(edges)
     for a, b, e in sorted(edges):
         G.setdefault(a, OrderedDict())[b] = e
 
