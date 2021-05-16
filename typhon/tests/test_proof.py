@@ -47,8 +47,8 @@ def test_maybe():
         lambda v: v == (Just(a / b) if b != 0 else Nothing[Real])
     ):
         if b != 0:
-            v = a / b
-            return Just(v)
+            x = a / b
+            return Just(x)
         else:
             return Nothing[Real]
 
