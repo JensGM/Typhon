@@ -199,9 +199,11 @@ def symbolic_execution_graph(function, scope, ret_val):
         for axiom in G[a][b].axioms
     ]
 
-    # One of the initial branched must be true
-    initial_branch = reduce(z3.Or, (edges[0][b] for b in edges[0]))
-    control_flow = [initial_branch]
+    control_flow = []
+    if len(edges[0]) == 1:
+        # The initial edge must be true. If the first statement branches, this
+        # is implied.
+        control_flow.append(edges[0][1])
     for a in G:
         children = G[a]
         branching = len(children) != 1
