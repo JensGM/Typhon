@@ -163,7 +163,7 @@ def execution_graph(function_body, scope, ret_val):
     node_counter = count()
     def mkedge(constraint,
                *axioms,
-               in_node=lambda i=next(node_counter): i,
+               in_node=lambda _i=next(node_counter): _i,
                out_node=lambda: next(node_counter)):
         in_node = in_node()
         out_node = out_node()

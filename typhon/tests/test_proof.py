@@ -53,9 +53,7 @@ def test_maybe():
             return Nothing[Real]
 
     @prove
-    def divide_error(a : Real, b : Real) -> Real | (
-        lambda v: v == a / b
-    ):
+    def divide_error(a : Real, b : Real) -> Real | (lambda v: v == a / b):
         return a / b
 
     assert divide.prove()
@@ -82,6 +80,7 @@ def test_proof_complex():
         y = (a0 * R1 - b0 * R0 + (a0 * b2 - b0 * a2) * Iz +
                                  (a0 * b1 - b0 * a1) * Iy) / (a0 * b1 - b0 * a1)
         x = (R0 + R1 + (a2 + b2) * Iz - (a1 + b1) * (y - Iy)) / (a0 + b0) + Ix
-        return Just((x, y)) if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0 else Nothing[Tuple[Real, Real]]
+        return Just((x, y)) if (a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0
+        ) else Nothing[Tuple[Real, Real]]
 
     assert planar_windspeed.prove()
