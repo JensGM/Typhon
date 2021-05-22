@@ -63,25 +63,38 @@ def test_maybe():
 
 
 def test_proof_complex():
-    @prove
+    @verify
     def planar_windspeed(
         a0 : Real, a1 : Real, a2 : Real,
         b0 : Real, b1 : Real, b2 : Real,
         Ix : Real, Iy : Real, Iz : Real,
         R0 : Real, R1 : Real
-    ) -> Maybe[Tuple[Real, Real]] | (
-        lambda v: (
-                R0 == a0 * (v[0] - ix) + a1 * (v[1] - iy) - a2 * iz and
-                R1 == b0 * (v[0] - ix) + b1 * (v[1] - iy) - b2 * iz
-            if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0
-            else
-                v == Nothing[Tuple[Real, Real]]
-        )
-    ):
-        y = (a0 * R1 - b0 * R0 + (a0 * b2 - b0 * a2) * Iz +
-                                 (a0 * b1 - b0 * a1) * Iy) / (a0 * b1 - b0 * a1)
-        x = (R0 + R1 + (a2 + b2) * Iz - (a1 + b1) * (y - Iy)) / (a0 + b0) + Ix
-        return Just((x, y)) if (a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0
-        ) else Nothing[Tuple[Real, Real]]
+    ) -> Maybe[Tuple[Real, Real]]:
+        if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0:
+            y = ( a0 * R1
+                - b0 * R0
+                + (a0 * b2 - b0 * a2) * Iz
+                + (a0 * b1 - b0 * a1) * Iy) / (a0 * b1 - b0 * a1)
+            x = ((R0
+                + R1
+                + (a2 + b2) * Iz
+                - (a1 + b1) * (y - Iy)) / (a0 + b0)
+                + Ix)
+            return Just((x, y))
+        else:
+            return Nothing[Tuple[Real, Real]]
 
-    assert planar_windspeed.prove()
+    @prove_that
+    def planar_windspeed_solves_equation():
+        with planar_windspeed(a0, a1, a2,
+                              b0, b1, b2,
+                              Ix, Iy, Iz,
+                              R0, R1) as x, y:
+            if a0 + b0 != 0 and a0 * b1 - b0 * a1 != 0:
+                assert R0 == a0 * (x - ix) + a1 * (y - iy) - a2 * iz
+                assert R1 == b0 * (x - ix) + b1 * (y - iy) - b2 * iz
+            else:
+                assert v == Nothing[Tuple[Real, Real]]
+
+    assert planar_windspeed.verify()
+    assert planar_windspeed_solves_equation()
