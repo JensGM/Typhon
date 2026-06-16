@@ -50,20 +50,29 @@ def lambda_ast(λ):
     """
     def explode(code):
         asm = io.StringIO()
+        seq = 0
         for inst in dis.get_instructions(code):
-            if inst.opname == 'LOAD_CONST':
-                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
-            elif inst.opname == 'LOAD_FAST':
-                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
-            elif inst.opname == 'LOAD_GLOBAL':
-                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
-            elif inst.opname == 'LOAD_NAME':
-                print(inst.offset, 'LOAD_GENERIC', inst.argval, file=asm)
+            # Skip opcodes that have no semantic meaning for matching
+            if inst.opname in ('RESUME', 'COPY_FREE_VARS',
+                                'PUSH_NULL', 'NOT_TAKEN'):
+                continue
+            if inst.opname in ('LOAD_CONST', 'LOAD_SMALL_INT'):
+                print(seq, 'LOAD_GENERIC', inst.argval, file=asm)
+            elif inst.opname in ('LOAD_FAST', 'LOAD_FAST_BORROW',
+                                 'LOAD_FAST_LOAD_FAST'):
+                print(seq, 'LOAD_GENERIC', inst.argval, file=asm)
+            elif inst.opname in ('LOAD_GLOBAL',):
+                print(seq, 'LOAD_GENERIC', inst.argval, file=asm)
+            elif inst.opname in ('LOAD_NAME', 'LOAD_DEREF'):
+                print(seq, 'LOAD_GENERIC', inst.argval, file=asm)
             else:
-                print(inst.offset,
-                      inst.opname,
-                      inst.argval if inst.argval else inst.arg,
-                      file=asm)
+                # For jump instructions, argval is a byte offset that
+                # differs between compilation modes — use opname only
+                argval = inst.argval if inst.argval else inst.arg
+                if inst.opname.startswith(('POP_JUMP_', 'JUMP_')):
+                    argval = '_'
+                print(seq, inst.opname, argval, file=asm)
+            seq += 1
         asm.seek(0)
         return asm.read()
 

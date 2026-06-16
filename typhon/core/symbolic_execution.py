@@ -54,7 +54,7 @@ class ExprToSymbolic(ast.NodeTransformer):
     def visit_BoolOp(self, node):
         self.generic_visit(node)
 
-        id = '_z3_Or' if isinstance(node, ast.Or) else '_z3_And'
+        id = '_z3_Or' if isinstance(node.op, ast.Or) else '_z3_And'
         name = ast.Name(id=id, ctx=ast.Load())
 
         return ast.Call(name, args=node.values[:],keywords=[])

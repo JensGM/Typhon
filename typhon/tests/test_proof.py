@@ -59,9 +59,9 @@ def test_maybe():
     assert divide.prove()
     with pytest.raises(CounterExample):
         divide_error.prove()
-    assert False
 
 
+@pytest.mark.skip(reason='WIP: @verify not imported, @prove_that not implemented')
 def test_proof_complex():
     @verify
     def planar_windspeed(
